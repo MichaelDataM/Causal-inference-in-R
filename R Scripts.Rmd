@@ -1,0 +1,634 @@
+---
+title: "Rscripts"
+author: "Michael Li"
+date: "`r Sys.Date()`"
+output: html_document
+---
+install.packages('pwr')
+library(pwr)
+library(readxl)
+options(width = 1000)
+library(dplyr)
+
+
+## Calculate the power size
+
+```{r setup, include=FALSE}
+pwr.t.test(d=0.1, sig.level = 0.1,power = 0.8,type = 'two.sample',alternative = 'greater')
+```
+
+## Check the randomalization
+
+```{r cars}
+t.test(price ~ treated, data = data1)
+t.test(likes ~ treated, data = data1)
+## result should not be significant
+```
+
+## Explore the heterogeneity
+
+```{r pressure, echo=FALSE}
+summary(lm(log(1+leases)~disc*price,data = data1))
+```
+
+
+## Uber case
+
+```{r pressure, echo=FALSE}
+uber_data = read_excel('/Users/duorouli/Downloads/uber_data_set.xlsx',sheet = 'Switchbacks',col_names = TRUE)
+names(uber_data)
+view(uber_data)
+
+uber_data = uber_data %>% mutate(tot_trips = trips_pool+trips_express,
+                                 cost_per_trip = total_driver_payout/tot_trips,
+                                 match_rate = total_matches/tot_trips,
+                                 double_match_rate = total_double_matches/tot_trips)
+
+# check whether people use more ridesharing during commute
+average_data <- uber_data %>%
+  group_by(commute) %>%
+  summarise(average_trips = mean(tot_trips, na.rm = TRUE))
+t.test(tot_trips ~ commute,data = uber_data %>% filter(treat == FALSE))
+
+uber_data = uber_data %>% mutate(total_revenue = 12.5*trips_pool+10*trips_express)
+
+# check whether theb revenue is higher during rush hour
+t.test(total_revenue ~ commute,data = uber_data %>% filter(treat == FALSE))
+
+# check match rate during not rush hour
+t.test(match_rate ~ treat,data = uber_data %>% filter(commute == FALSE))
+
+
+sorted_data <- uber_data %>% arrange(city_id, period_start)
+t.test(total_driver_payout ~ treat,data = uber_data)
+t.test(total_driver_payout ~ commute,data = uber_data)
+summary(lm(total_driver_payout ~ treat*commute,data = uber_data))
+```
+
+## Movie case
+
+```{r pressure, echo=FALSE}
+movie_data = read.csv('/Users/duorouli/Downloads/MovieData-Exp.csv',head = TRUE)
+movie_data = movie_data %>% mutate(treat = ifelse(base_price == price,0,1))
+# chect whether normal distributed
+hist(movie_data$leases) # the data is right_skewed so we need to log the dependent variable
+# check randomalization
+t.test(base_price ~ treat,data = movie_data) # check the randomalization
+# review the impact
+summary(lm(log(1+leases)~treat,data = movie_data))
+# explore the heterogeneity
+
+summary(lm(log(1+leases)~treat*base_price,data = movie_data))
+movie_data = movie_data %>% mutate(new_likes = likes/100000)
+summary(lm(log(1+leases)~treat*new_likes,data = movie_data))
+```
+
+## Matching technique
+library(dplyr)
+library(ggplot2)
+library(MatchIt)
+```{r pressure, echo=FALSE}
+data = read.csv('/Users/duorouli/Downloads/TSTV-Obs-Dataset.csv',head = TRUE)
+#How many weeks does the data cover? 
+unique_weeks <- length(unique(data$week))
+#What is the minimum and maximum week in the data? 
+min(data$week)
+max(data$week)
+
+#Premium indicates households that got the TSTV
+#How many households got TSTV? 
+data %>% filter(premium==1) %>% select(id) %>% unique() %>% nrow()
+data %>% filter(premium==0) %>% select(id) %>% unique() %>% nrow()
+
+#Which week did TSTV start (you will need to use the after variable for this)? 
+data %>% filter(after ==1) %>% select(week) %>% min()
+
+#How are view time variables distributed? 
+hist(data$view_time_live_hr)
+
+#Group data by week and premium and calculate average values of the viewing variables (ave_view_total for average of viewtime total and so on)
+#Store this in an dataframe (object) called week_ave
+week_ave <- data %>% group_by(week,premium) %>% 
+  summarise(ave_view_total = mean(view_time_total_hr),
+            ave_view_live = mean(view_time_live_hr),
+            ave_view_tstv = mean(view_time_tstv_hr))
+
+#This is not part of the ppt file
+# plot for total TV time
+ggplot(week_ave,aes(x=week,y=ave_view_total,color = factor(premium)))+
+  geom_line()+
+  geom_vline(xintercept = 2227, linetype='dotted')+
+  ylim(0, 6) + xlim(2220,2233) +
+  theme_bw()
+
+# plot for live TV time
+ggplot(week_ave,aes(x=week,y=ave_view_live,color = factor(premium)))+
+  geom_line()+
+  geom_vline(xintercept = 2227, linetype='dotted')+
+  ylim(0, 6) + xlim(2220,2233) +
+  theme_bw()
+
+# plot for TSTV TV time
+ggplot(week_ave,aes(x=week,y=ave_view_tstv,color = factor(premium)))+
+  geom_line()+
+  geom_vline(xintercept = 2227, linetype='dotted')+
+  ylim(0, 6) + xlim(2220,2233) +
+  theme_bw()
+
+
+# Propensity Score Matching
+#Use the group_by function to group by id and after. Calculate average of variables view_time_total_hr and premium
+# Store average grouped data in object named data_summary 
+data_summary = data %>% group_by(id,after) %>% summarise(view_time_total_hr=mean(view_time_total_hr),
+                            premium=mean(premium))
+
+# Use data_summary to create another data frame called data_pre.The new data frame  should contain average TV watched by household before TSTV was implemented 
+data_pre = data_summary %>% filter(after == 0) 
+
+# Use data_pre to check covariate balancing. Before the intervention, are households that get TSTV viewing the same amount of TV as households that do not get TSTV?
+t.test(view_time_total_hr~premium,data = data_pre)
+
+# Use data_pre to generate Propensity scores. Use GLM to do this. 
+
+PScore = glm(premium ~ view_time_total_hr,data_pre,family = 'binomial')$fitted.values
+
+
+# Perform Matching. Use the matchIT command to generate propensity scores and match
+# Note: the matchit command may take a long time to run with large datasets
+
+match_output = matchit(premium ~ view_time_total_hr,
+                       data = data_pre, method = "nearest",distance = "logit",
+                       caliper = .001 ,replace = FALSE,ratio = 1)
+
+summary(match_output)
+match_data = match.data(match_output)
+
+# Use match_data to evaluate covariate balancing
+
+t.test(view_time_total_hr ~ premium, match_data )
+
+# Subset data_summary to obtain rows capturing average TV watching after TSTV has been implemented
+#Call this data set data_post
+
+data_post = data_summary %>% filter(after ==1 )
+
+#Use a linear model on ALL the data_post to test the difference between average view time for households with TSTV and households without TSTV
+#CHECK: How was view time data distributed? Should you make a transformation? 
+
+summary(lm(log(1+view_time_total_hr) ~ premium, data = data_post))
+
+#Finally, use the same linear model on data in data_post. However, this time restrict analysis to households that have been matched.
+
+
+summary(lm(log(1+view_time_total_hr) ~ premium, data = data_post %>% filter(id %in% match_data$id ) ))
+
+## other
+summary(lm(log(1+data$view_time_total_hr)~factor(data$week)*data$premium),data = data)
+```
+## Fixed Effect and Random Regression --- Facebook case
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(plm)
+
+# read data
+data = read.csv("/Users/duorouli/Downloads/FB data.csv") %>%
+  filter(WC > 3 & likes_count < 100) %>%
+  select(likes_count, WC, Posemo, Negemo, picture, type, company, postId)
+
+# naive regression
+model1 = lm(likes_count ~ WC + Posemo + Negemo + picture + type, data = data)
+summary(model1)
+
+# with company fixed-effect
+FE_model = plm(likes_count ~ WC + Posemo + Negemo + picture + type, data = data, index = "company", effect="individual", model="within")
+summary(FE_model)
+
+RE_model = plm(likes_count ~ WC + Posemo + Negemo + picture + type, data = data, index = "company", effect="individual", model="random")
+summary(RE_model)
+
+phtest(FE_model, RE_model)
+```
+
+
+## Fixed Effect and Random Regression--simulation
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(plm)
+set.seed(1001)
+options(max.print = 100)
+
+
+# We begin by simulating a panel dataset, with 500 individuals and 40 observations per individual
+i = rep(1:500,each = 40)
+t = rep(1:40,times = 500)
+data = data.frame(i, t) %>%
+  group_by(i) %>%
+  mutate(weight = rnorm(1, mean = 180, sd=30)) %>%
+  ungroup() 
+View(data)
+# generate a treatment variables that is correlated with the individual-specific "weight"
+data = data %>% mutate(X = round(weight/max(weight)+runif(20000,0,1)-1),0)
+cor(data$X,data$weight)
+# generate the outcome
+data = data %>% mutate(Y = 0.5+0.6*X+0.3*weight+rnorm(20000,0,1))
+
+# First, so let's start off by looking at the omitted variable bias again.
+correct_reg = lm(Y~X+weight,data = data)
+summary(correct_reg)
+omit_reg = lm(Y~X,data = data)
+summary(omit_reg)
+# Now, let's take advantage of our panel data and try a fixed effect regression.   
+# within estimator
+within_reg2 = plm(Y ~ X, data = data, index=c("i"), effect="individual", model="within")
+#summary(within_reg2)
+
+random_reg2 = plm(Y ~ X, data = data, index=c("i"), effect="individual", model="random")
+#summary(random_reg2)
+# Hausman test
+phtest(within_reg2, random_reg2)
+### p-value < 0.05 -- fixed effect
+
+```
+
+## Difference in Difference -- Card Cruger & TV
+```{r}
+library(dplyr)
+library(ggplot2)
+library(plm)
+data_card = read.csv('/Users/duorouli/Downloads/card_kruger.csv')
+data_card %>% group_by(dummy_nj,after) %>% summarise(mean(employees))
+
+summary(lm(employees ~ dummy_nj*after,data = data_card))
+data_tv = read.csv('/Users/duorouli/Downloads/TSTV-obs-Dataset.csv')
+#How many weeks does the data cover? 
+#What is the minimum and maximum week in the data? 
+
+min(data_tv$week)
+max(data_tv$week)
+
+#Premium indicates households that got the TSTV
+#How many households got TSTV? 
+data_tv %>% filter(premium==1) %>% group_by(id) %>% nrow()
+
+#Which week did TSTV start (you will need to use the after variable for this)? 
+data_tv %>% filter(after == 1) %>% select(week) %>% min()
+
+#How are view time variables distributed?
+hist(data_tv$view_time_live_hr)
+
+
+#Group data by week and premium and calculate average values of the viewing variables (ave_view_total for average of viewtime total and so on)
+#Store this in an dataframe (object) called week_ave
+week_ave = data_tv %>% group_by(premium,week) %>% summarise(ave_view_total = mean(view_time_total_hr),
+                                              ave_view_live = mean(view_time_live_hr),
+                                              ave_view_tstv = mean(view_time_tstv_hr))
+
+#This is not part of the ppt file
+# plot for total TV time
+
+ggplot(data = week_ave,aes(x=week,y = ave_view_total,color = factor(premium)))+
+  geom_line()+
+  geom_vline(xintercept = 2227,linetype='dotted')+
+  xlim(2220,2233)+
+  ylim(0,6)+
+  theme_bw()
+# plot for live TV time
+ggplot(week_ave, aes(x = week, y = ave_view_live, color = factor(premium))) + 
+  geom_line() + 
+  geom_vline(xintercept = 2227, linetype='dotted') + 
+  ylim(0, 6) + xlim(2220,2233) + 
+  theme_bw()
+
+# plot for TSTV time
+ggplot(week_ave, aes(x = week, y = ave_view_tstv, color = factor(premium))) + 
+  geom_line() + 
+  geom_vline(xintercept = 2227, linetype='dotted') + 
+  ylim(0, 6) + xlim(2220,2233) + 
+  theme_bw()
+
+#The data set has an identifier for the periods in which TSTV was turned on
+#It also has an identifier for houses that were in the treatment
+#Regress the total TV watched on the DiD specification we have done so far
+
+summary(lm(log(1+view_time_total_hr)~after*premium,data_tv))
+summary(lm(log(1+view_time_total_hr)~factor(week)*premium,data_tv))
+
+
+#now include household FEs (instead of the premim variable)
+
+model_fe1  = plm(data = data_tv, log(1+view_time_total_hr)~after*premium,
+                            model = 'within',
+                            index = c('id'),
+                              effect    = 'individual')
+summary(model_fe1)
+
+#now include week FEs (instead of the after variable)
+model_fe2 <- plm(log(1+view_time_total_hr)~
+                   after*premium,data = data_tv,
+                    model = 'within',
+                 index = c('id','week'),
+                 effect = 'twoways')
+summary(model_fe2)
+
+#Let's run a dynamic DiD model where we include dummies for all weeks
+
+did_dyn1 = lm(log(1+view_time_total_hr) ~  premium*factor(week),data = data_tv)
+summary(did_dyn)
+
+
+# Let's retrieve the coefficients and standard errors, and create confidence intervals
+
+model = summary(did_dyn)
+coefs_ses = as.data.frame(model$coefficients[16:28,c("Estimate", "Std. Error")])
+colnames(coefs_ses) = c("beta", "se")
+coefs_ses = coefs_ses %>%
+  mutate(ub95 = beta + 1.96*se,
+         lb95 = beta - 1.96*se,
+         week = 2221:2233)
+# Let's connect the estimates with a line and include a ribbon for the CIs. 
+ggplot(data =coefs_ses,aes(x=week,y = beta))+
+  geom_line()+
+  geom_ribbon(aes(ymax = ub95,ymin=lb95), alpha = .3)+
+  theme_bw()
+
+# Try placebo test 
+# Select data before 2227
+# Select a random implemetation date of 2224(antifipation effect)
+data_pre = data_tv %>% filter(week < 2227) %>% mutate(after_new = ifelse(week > 2224,1,0))
+
+model3 <- plm(log(1+view_time_total_hr) ~ after_new * premium,
+              data = data_pre, index = c("id","week"),
+              model = "within",effect = "twoway")
+summary(model3)
+```
+
+## Staggered Treatment--Craigslist case & VBM case
+```{r}
+data_hiv = read.csv('/Users/duorouli/Downloads/HIV_data.csv')
+model_cl = plm(HIV ~ CL, data = data_hiv,model = 'within',effect = 'twoways',
+               index = c('city','year'))
+summary(model_cl)
+
+
+data_vbm = read.csv('/Users/duorouli/Downloads/vbm_data.csv',sep =',')
+vbm_data <- data_vbm %>% group_by(state,county) %>% mutate(id = cur_group_id())
+
+model1 <- plm(turnout_share ~ treat,data = vbm_data,model = 'within',effect = 'twoways',index = c('id','year'))
+summary(model1)
+
+## test the parallel change assumption 
+## what year does different country adopts VBM
+vbm_data_min_year = vbm_data %>% group_by(id) %>% filter(treat == 1) %>% summarise(min_year=min(year))
+
+vbm_data = merge(vbm_data,vbm_data_min_year,by = 'id',all.x = TRUE)
+
+vbm_data <- vbm_data %>% mutate(dif_year = year-min_year)
+
+vbm_data$dif_year = ifelse(vbm_data$dif_year < -6,-6,vbm_data$dif_year)
+vbm_data$dif_year = ifelse(vbm_data$dif_year > 6,6,vbm_data$dif_year)
+
+model_pt <- plm(turnout_share ~ factor(dif_year),data = vbm_data,model = 'within',effect = 'twoways',index = c('id','year'))
+
+summary(model_pt)
+```
+
+## Staggered Treatment-- online dating case
+```{r}
+data_date = read.csv('/Users/duorouli/Downloads/did_dating.csv')
+
+model1 <- plm(msg_sent ~ after_mobile_adopt,data = data_date,model = 'within',effect = 'twoways',index = c('male_user_id','t'))
+
+summary(model1)
+
+
+did_dating <- data_date %>% group_by(male_user_id) %>% filter(after_mobile_adopt == 1) %>% mutate(min_t = min(t)) %>% select(male_user_id,min_t) %>% unique()
+
+data_date = merge(data_date,did_dating,by = 'male_user_id',all.x = TRUE)
+
+data_date <- data_date %>% mutate(dif_t = t-min_t)
+
+data_date$dif_t  <- ifelse(data_date$dif_t < -3,-3,data_date$dif_t)
+data_date$dif_t  <- ifelse(data_date$dif_t > 3,3,data_date$dif_t)
+
+
+model_test = plm(msg_sent ~ factor(dif_t),data = data_date,momdel= 'within',
+                 effect = 'twoways',index = c('male_user_id','t'))
+
+summary(model_test)
+
+## add one intervention item white
+
+model_test2 = plm(msg_sent ~ after_mobile_adopt*white,data = data_date,momdel= 'within',
+                 effect = 'twoways',index = c('male_user_id','t'))
+summary(model_test2)
+
+## the impact of white is not significant
+
+
+
+```
+
+
+## Synthetic Control
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(janitor)
+library(Synth)
+library(ggthemes)
+library(patchwork)
+# Background: Jena germany was the first German district to institute mandatory face mask requirements.
+# They did this on April 6, 2020, weeks before the federal government imposed the same rule across the country.
+# We are going to collect the same data, and try to replicate the result. 
+covid <- read.csv("/Users/duorouli/Downloads/germany_data (1)/Covid_DE_cases_by_district.csv")
+dist_names <- read.csv("/Users/duorouli/Downloads/germany_data (1)/Covid_DE_district_IDs.csv")
+covid <- covid %>% merge(dist_names, by.x = "dist_id", by.y = "id")
+
+
+# Let's convert date column into date format. 
+covid$date <- as.Date(covid$date)
+covid <- covid[order(covid$dist_id,covid$date),]
+
+
+# We can pull in other features, though these are not actually required. 
+# E.g., we can pull in physicians per capita in each district. 
+dist_physicians <- read.csv("/Users/duorouli/Downloads/germany_data (1)/dist_phys_pcap.csv",sep=";") %>% rename("dist_id" = "Kennziffer", "physicians" = "Ärzte.je..Einwohner") %>% filter(!is.na(dist_id)) %>% select(c(dist_id,physicians))
+
+dist_physicians$physicians <- as.numeric(gsub(",",".",dist_physicians$physicians))
+covid <- covid %>% merge(dist_physicians, by="dist_id", all.x=TRUE)
+
+
+# We now pull in pharmacy information.
+dist_pharma <- read.csv("/Users/duorouli/Downloads/germany_data (1)/dist_pharmas_2017.csv",sep=";") %>%filter(!is.na(Kennziffer)) %>% rename("dist_id" = "Kennziffer","pharmacies" = "Apotheken")
+
+dist_pharma$pharmacies <- as.numeric(gsub(",",".",dist_pharma$pharmacies))
+dist_pharma <- dist_pharma %>% select(c(dist_id,pharmacies))
+covid <- covid %>% merge(dist_pharma, by="dist_id",all.x=TRUE)
+
+# We can pull in population information by age, and so on now as well.
+dist_pop <- read.csv("/Users/duorouli/Downloads/germany_data (1)/dist_pop_age.csv", sep=";") %>% select(-c(dist_name))
+dist_pop$year <- substr(dist_pop$year,1,4)
+
+dist_pop <- dist_pop %>% lapply(as.integer) %>% as.data.frame()
+
+# We have yearly values for 3 years - let's just use the most recent set of values in 2019.
+dist_pop <- dist_pop %>% filter(year==2019) %>% select(-c(year))
+covid <- covid %>% merge(dist_pop, by="dist_id", all.x=TRUE)
+
+# Jena is district id 16053. 
+covid$treat <- covid$dist_id==16053
+
+# Let's trim to a reasonable window around the event date. 
+covid <- subset(covid,date > as.numeric(as.Date("2020-03-01")) & date <= as.numeric(as.Date("2020-05-21")))
+
+# Hard to see much here in the descriptive plot of the time series.
+# Jena is there in the middle, though hard to see. 
+ggplot(data=covid,aes(x=date,y=log(cum_cases+1),color=factor(treat),group=dist_id,alpha=treat)) +
+  geom_line() +
+  geom_vline(xintercept=as.numeric(as.Date("2020-04-06")),color="red") + 
+  xlab(expression(bold(paste("Date (2020)")))) +  
+  ylab(expression(bold(paste("Logarithm of Cases")))) + 
+  #scale_alpha_manual(guide="none",values=c(0.25,1))+
+  scale_color_manual(name="District",labels=c("Others", "Jena"),values=c("gray","blue"))+
+  ggtitle("Cumulative COVID-19 Cases Over Time") +
+  theme_bw() 
+
+
+### Synthetic Control using LASSO
+
+# First we pivot the data from long to wide, to use other districts' time series as predictors.
+covid.wide <- covid %>% pivot_wider(id_cols=c("date"),names_from=c("district"),values_from="cum_cases")
+covid.wide.train <- subset(covid.wide,date<as.numeric(as.Date("2020-04-06")))
+
+
+# We have many more predictors than time periods now (~400 vs. 35), so we use LASSO for feature selection.
+covid.wide.train.lasso <- remove_empty(covid.wide.train, which=c("rows","cols"))
+covid.wide.train_mm <- model.matrix(` SK Jena`~., covid.wide.train.lasso)
+lasso <- cv.glmnet(covid.wide.train_mm, covid.wide.train$` SK Jena`, standardize=TRUE,alpha=1,nfolds=5)
+ests <- as.matrix(coef(lasso,lasso$lambda.1se))
+
+# Here are the non-zero control panels that lasso selected.
+names(ests[ests!=0,])
+
+# We can use the resulting control districts to create our 'synthetic control'. 
+fml.rhs <- paste(c(names(ests[ests!=0,]))[2:length(names(ests[ests!=0,]))],collapse="+")
+fml <- as.formula(paste("` SK Jena`~",fml.rhs))
+synth <- lm(data=covid.wide.train,formula=fml)
+
+# Last, we can synthesize the resulting control series into the post treatment period. 
+covid.wide$synth <- predict(synth,newdata = covid.wide)
+
+# And, finally, we plot the comparison between synthetic and actual.
+OLS_plot <- ggplot(data=covid.wide,aes(y=synth,x=date,linetype="dashed")) + geom_line() + 
+  geom_line(aes(y=` SK Jena`,x=date,linetype="solid")) +
+  geom_vline(xintercept=as.numeric(as.Date("2020-04-06")),color="red") + 
+  xlab(expression(bold(paste("Date (2020)")))) +  
+  ylab(expression(bold(paste("Cumulative COVID-19 Cases")))) + 
+  scale_linetype_manual(name="Series",values=c("dashed","solid"),labels=c("Synth","Jena, DE"))+
+  ggtitle("Effect of Masks on COVID-19 (SCUL)") +
+  theme_economist()# +
+  #Comment the below line out if you don't have Economica fonts installed.
+#  theme(text = element_text(family = "Economica", size = 10), axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)))+
+#  xlim(as.Date("2020-03-27"),as.Date("2020-04-26")) +
+#  ylim(0,225)+
+#  NULL
+
+# Let's see how we did.
+OLS_plot
+
+## Vanilla Synthetic Control Method using the Synth package.
+
+# The Synth package will implement non-negativity constraints on the control weights, and optimize control selection
+# by minimizing MSPE. This package will also make it easy to include additional covariates as predictors (distict features).
+
+# Make sure our data is a data frame.
+covid <- as.data.frame(covid)
+# Renaming the outcome to Y, because Synth was complaining (throwing errors) with the original variable name.
+covid <- covid %>% rename(Y = cum_cases)
+
+# Cast the panel and date variables as numeric.
+covid$date2 <- as.numeric(covid$date)
+covid$dist_id <- as.numeric(covid$dist_id)
+
+# We will also omit a few of Jena's neighboring districts and districts that instituted their own mask policies soon after Jena. 
+# Specifically, we will exclude 16071; Weimarer Land, 16062; Nordhausen, and 8325; Rottweil.
+# Saale-Holzland can also be omitted, but we dropped it due to missing data on district features, earlier.
+dist_ids <- unique(covid$dist_id)
+control_ids <- dist_ids[dist_ids != 16053 & dist_ids != 16071 & dist_ids != 16062 & dist_ids != 8325]
+
+dataprep.out=
+  dataprep(foo = covid,
+           dependent = "Y",
+           unit.variable = "dist_id",
+           time.variable = "date2",
+           
+           # The authors used a lot of seemingly irrelevant predictors
+           # For example, average female age? Average male age? Why is gender important?
+           # I am going to keep things simple here: pharmacies, physicians and elderly.
+           predictors = c("pharmacies","physicians","yr.75.years.and.over"),
+           predictors.op = "mean",
+           
+           # We can also predict using case volumes day before treatment and week before treatment.
+           special.predictors = list(list("Y", 18356, "mean"),list("Y", 18350, "mean")),
+           
+           #which panel is treated?
+           treatment.identifier = 16053,
+           
+           #which panels are we using to construct the synthetic control?
+           # Controls here will be every other district.
+           controls.identifier = control_ids,
+           
+           #what is the pre-treatment time period?
+           #these numeric values correspond to 34 days before treatment.
+           #the paper only uses the 14 days before treatment for some reason?
+           time.predictors.prior = c(18323:18357),
+           
+           time.optimize.ssr = c(18323:18357),
+           
+           #name of panel units
+           unit.names.variable = "district",
+           
+           #time period to generate the plot for.
+           #paper only goes 20 days post treatment because other treatments started.
+           #We will just see what this looks like, however. 
+           time.plot = 18343:18403)
+
+# And final, create the synthetic control.
+# This will take a few minutes to run and identify the optimal weights.
+synth.out = synth(dataprep.out)
+
+# Synth's native plotting functions.
+# Path.plot() plots the synthetic against the actual treated unit data. 
+path.plot(dataprep.res = dataprep.out, synth.res = synth.out,Xlab="Date",Ylab="Cumulative COVID-19 Cases",Main="Comparison of Synth vs. Actual Cum. COVID-19 Cases in Jena, Germany")
+abline(v=18358,lty=2,col="red")
+
+
+# Let's now make a more attractive plot of the ATT?  
+# One that lets us use proper date labels and things.
+
+# Let's pull out the data from the result, to make our own nicer plots in ggplot of course
+synth_data_out = data.frame(dataprep.out$Y0plot%*%synth.out$solution.w) 
+date = as.numeric(row.names(synth_data_out))
+plot.df = data.frame(y=covid$Y[covid$dist_id==16053 & covid$date2 %in% date])
+plot.df$synth = synth_data_out$w.weight
+plot.df$date <- covid$date[covid$dist_id==16053 & covid$date2 %in% date]
+SCM_plot <- ggplot(plot.df,aes(y=y,x=date,linetype="solid")) + geom_line() + 
+  geom_line(aes(y=synth,x=date,linetype="dashed")) +
+  geom_vline(xintercept=18358,color="red") + 
+  xlab(expression(bold(paste("Date (2020)")))) +  
+  ylab(expression(bold(paste("Cumulative COVID-19 Cases")))) + 
+  scale_linetype_manual(name="Series",values=c("dashed","solid"),labels=c("Synth","Jena, DE"))+
+  ggtitle("Effect of Masks on COVID-19 (Proper Synth)") +
+  theme_economist() +
+  xlim(as.Date("2020-03-27"),as.Date("2020-04-26")) +
+  ylim(0,225)+
+  NULL
+
+# Let's put the two plots side-by-side.
+OLS_plot + SCM_plot
+```
+
